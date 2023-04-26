@@ -1,18 +1,27 @@
-#include "TEveTrack.h"
-#include "TEveVSDStructs.h"
-#include "TEveManager.h"
-#include "TEveViewer.h"
-#include "TSystem.h"
-#include "TGLViewer.h"
-#include "TMath.h"
- 
-#include "TEveViewer.h"
-#include "TEvePointSet.h"
+#ifndef ROOT_TEveManager
+#define ROOT_TEveManager
 
-#define GRIDNODES 10 // number of nodes for grid in each direction
+#include <TEveTrack.h>
+#include <TEveVSDStructs.h>
+#include <TEveManager.h>
+#include <TEveViewer.h>
+#include <TSystem.h>
+#include <TGLViewer.h>
+#include <TMath.h>
+ 
+#include <TEvePointSet.h>
+
+#include <vector>
+#include <cmath>
+#include <string.h>
+#include <time.h>
+
+
+#define nsipm 64 // number of light detection modules for each type
 
 TCanvas *c=0;
 TTree *tr;
+TTree *evtr;
 char str[128];
 TFile* _file0=0;
 TEveLine *track;
@@ -33,6 +42,9 @@ TGLAnnotation* ann;
 Int_t curnode=0;
 Int_t prevnode=0;
 
+int cut_count=0;
+clock_t t0, t1, t2, t3;
+
 
 //DEFINE LIGHT R/O PARAMETERS
 
@@ -41,77 +53,74 @@ Int_t prevnode=0;
 // 			   drift: -z direction
 //		       origin: middel of pixel_plane
 
-Float_t TPC_size_x = 600;
-Float_t TPC_size_y = 1200;
-Float_t TPC_size_z = 320;
+Float_t TPC_size_x = 300;
+Float_t TPC_size_y = 300;
+Float_t TPC_size_z = 300;
 
-Float_t TPC_shift_x = 150;
-Float_t TPC_shift_y = -150;
+Float_t TPC_shift_x = 0;
+Float_t TPC_shift_y = 0;
 Float_t TPC_shift_z = TPC_size_z/2.;
 
 //LCM parameter
-Float_t lcm1_size_x = 10;
-Float_t lcm1_size_y = 300;
-Float_t lcm1_size_z = 280;
+Float_t sipm_size_x = 6;
+Float_t sipm_size_y = 6;
+Float_t sipm_size_z = 0.1;
 
-Float_t lcm1_shift_x = -150;
-Float_t lcm1_shift_y = 0;
-Float_t lcm1_shift_z = 140;
+Float_t sipm_shift_x = 0;
+Float_t sipm_shift_y = 0;
+Float_t sipm_shift_z = 0;
 
-//ArCLight parameter
-Float_t acl1_size_x = 10;
-Float_t acl1_size_y = 300;
-Float_t acl1_size_z = 280;
+Int_t nsipm_x = 8;
+Int_t nsipm_y = 8;
 
-Float_t acl1_shift_x = -150;
-Float_t acl1_shift_y = 300;
-Float_t acl1_shift_z = 140;
+Float_t sipm_space_x = TPC_size_x / nsipm_x;
+Float_t sipm_space_y = TPC_size_y / nsipm_y;
+
+Float_t lyield = 22538; // ph/MeV at 0.5 kV/cm
+
+
 
 
 //INITILISE CHARGE EVENT VARIABLES
-Int_t           eventID;
-Int_t           event_start_t;
-Int_t           event_end_t;
-Int_t           event_duration;
-Int_t           event_unix_ts;
-Int_t           event_nhits;
-Float_t         event_q;
-Float_t         event_q_raw;
-Int_t           event_ntracks;
-Int_t           event_n_ext_trigs;
-Int_t		    trackID;
+Int_t		eventID;
+//Int_t		event_ntracks;
+//Int_t		trackID;
+//Int_t		track_eventID;
 Float_t         track_start_pos_x;
 Float_t         track_start_pos_y;
 Float_t         track_start_pos_z;
-Float_t         track_start_pos_t;
+//Float_t         track_start_pos_t;
 Float_t         track_end_pos_x;
 Float_t         track_end_pos_y;
 Float_t         track_end_pos_z;
-Float_t         track_end_pos_t;
+//Float_t         track_end_pos_t;
+Float_t			track_dx;
+Float_t			track_dy;
+Float_t			track_dz;
 Float_t   	    track_length;
-Int_t		    track_nhits;
+//Int_t		    track_nhits;
 Float_t		    track_q;
-Float_t		    track_q_raw;
-Float_t		    track_theta;
-Float_t		    track_phi;
-Float_t		    track_residual_x;
-Float_t		    track_residual_y;
-Float_t		    track_residual_z;
-Int_t 		    trigID;
-Int_t		    trig_type;
+//Float_t		    track_q_raw;
+//Float_t		    track_theta;
+//Float_t		    track_phi;
+//Int_t 		    trigID;
+//Int_t		    trig_type;
 
 //New variables
-Float_t 		lcm1_photons; //collected photons at the detector
-Float_t 		acl1_photons; //collected photons at the detector
+Float_t 		sipm_vis[nsipm]={}; //collected visibility at the detector
+Float_t 		sipm_npe[nsipm]={}; //collected visibility at the detector
 Float_t 		cgx;
 Float_t 		cgy;
 Float_t 		cgz;
+Int_t			lightreco_flag;
+Float_t			dqdx;
 
-TBranch 		*blcm1;
-TBranch 		*bacl1;
+TBranch 		*bsipm;
+TBranch			*bnpe;
 TBranch 		*bcgx;
 TBranch 		*bcgy;
 TBranch 		*bcgz;
+TBranch 		*blrf;
 
 
 
@@ -125,53 +134,45 @@ int open(char *fname)
 	*/
  	_file0 = new TFile(fname,"UPDATE");
  	if(_file0) { 
-	    printf("%s opened.\n",str); 
-	    tr=(TTree*)(_file0->Get("tracks"));
+	    printf("opened.\n",str); 
+		//evtr=(TTree*)(_file0->Get("events"));
+	        tr=(TTree*)(_file0->Get("tracks"));
 	   	//add branches
-	   	blcm1 = tr->Branch("lcm1",&lcm1_photons,"lcm1/F");
-	   	bacl1 = tr->Branch("acl1",&acl1_photons,"acl1/F");
+	   	bsipm = tr->Branch("sipm_vis",&sipm_vis,"sipm_vis[64]/F");
+		bnpe = tr->Branch("sipm_npe",&sipm_npe,"sipm_npe[64]/F");
 	   	bcgx = tr->Branch("cgx",&cgx,"cgx/F");
 	   	bcgy = tr->Branch("cgy",&cgy,"cgy/F");
 	   	bcgz = tr->Branch("cgz",&cgz,"cgz/F");
+	   	blrf = tr->Branch("lightreco_flag",&lightreco_flag,"lightreco_flag/I");		
 
 		// Set branch addresses.
 		tr->SetBranchAddress("eventID",&eventID);
-		tr->SetBranchAddress("event_start_t",&event_start_t);
-		tr->SetBranchAddress("event_end_t",&event_end_t);
-		tr->SetBranchAddress("event_duration",&event_duration);
-		tr->SetBranchAddress("event_unix_ts",&event_unix_ts);
-		tr->SetBranchAddress("event_nhits",&event_nhits);
-		tr->SetBranchAddress("event_q",&event_q);
-		tr->SetBranchAddress("event_q_raw",&event_q_raw);
-		tr->SetBranchAddress("event_ntracks",&event_ntracks);
-		tr->SetBranchAddress("event_n_ext_trigs",&event_n_ext_trigs);
-		tr->SetBranchAddress("trackID",&trackID);
+//		evtr->SetBranchAddress("event_ntracks",&event_ntracks);
+//		tr->SetBranchAddress("trackID",&trackID);
+//		tr->SetBranchAddress("track_eventID",&track_eventID);
 		tr->SetBranchAddress("track_start_pos_x",&track_start_pos_x);
 		tr->SetBranchAddress("track_start_pos_y",&track_start_pos_y);
 		tr->SetBranchAddress("track_start_pos_z",&track_start_pos_z);
-		tr->SetBranchAddress("track_start_pos_t",&track_start_pos_t);
 		tr->SetBranchAddress("track_end_pos_x",&track_end_pos_x);
 		tr->SetBranchAddress("track_end_pos_y",&track_end_pos_y);
 		tr->SetBranchAddress("track_end_pos_z",&track_end_pos_z);
-		tr->SetBranchAddress("track_end_pos_t",&track_end_pos_t);
-		tr->SetBranchAddress("track_length",&track_length);
-		tr->SetBranchAddress("track_nhits",&track_nhits);
+//		tr->SetBranchAddress("track_length",&track_length);
+//		tr->SetBranchAddress("track_dx",&track_dx);
+//		tr->SetBranchAddress("track_dy",&track_dy);
+//		tr->SetBranchAddress("track_dz",&track_dz);
 		tr->SetBranchAddress("track_q",&track_q);
-		tr->SetBranchAddress("track_q_raw",&track_q_raw);
-		tr->SetBranchAddress("track_theta",&track_theta);
-		tr->SetBranchAddress("track_phi",&track_phi);
-		tr->SetBranchAddress("track_residual_x",&track_residual_x);
-		tr->SetBranchAddress("track_residual_y",&track_residual_y);
-		tr->SetBranchAddress("track_residual_z",&track_residual_z);
-		tr->SetBranchAddress("trigID",&trigID);
-		tr->SetBranchAddress("trig_type",&trig_type);
+//		tr->SetBranchAddress("track_nhits",&track_nhits);
+//		tr->SetBranchAddress("track_theta",&track_theta);
+//		tr->SetBranchAddress("track_phi",&track_phi);
+
+		//evtr->BuildIndex("eventID");
  
 	    return tr->GetEntries();
  	}
  	printf("Error: %s can't be opened.\n",str); return 0; 
 }
 
-void SingleModule3DLightReco(char *fname, int pileup=0)
+void SingleModule3DLightReco(char *fname, int pileup=1)
 {
 	/**
 	* Initialise Light reco, build geometry, load first track
@@ -203,8 +204,8 @@ void SingleModule3DLightReco(char *fname, int pileup=0)
     //TGeoMedium *LAr = new TGeoMedium("Liquid Argon",146,146,0,1,8,90,-1,-1,0.5,-1);
 
 	//--- make the top container volume
-	TGeoVolume *top = geom->MakeBox("TOP", Vacuum, 1000., 1000., 1000.);
-	geom->SetTopVolume(top);
+	//TGeoVolume *top = geom->MakeBox("TOP", Vacuum, 1000., 1000., 1000.);
+	//geom->SetTopVolume(top);
 
 	// Make the elementary assembly of the whole structure
 	TGeoVolume *tpc = new TGeoVolumeAssembly("TPC");
@@ -215,39 +216,38 @@ void SingleModule3DLightReco(char *fname, int pileup=0)
 	argon->SetVisibility(kTRUE);
 	argon->SetLineColor(kBlue);
 
-	tpc->AddNode(argon,i,new TGeoTranslation(TPC_shift_x,TPC_shift_y,TPC_shift_z));  i++;
+	//tpc->AddNode(argon,i,new TGeoTranslation(TPC_shift_x,TPC_shift_y,TPC_shift_z));  i++;
 
-	TGeoVolume *pixel_board=geom->MakeBox("PixelBoard", Al, 150,150,0.1);
+	TGeoVolume *pixel_board=geom->MakeBox("PixelBoard", Al, 150,150,1);
 	pixel_board->SetTransparency(70);
 	pixel_board->SetVisibility(kTRUE);
 	pixel_board->SetLineColor(kBlue);
 
-	tpc->AddNode(pixel_board,i,new TGeoTranslation(0,0,0)); i++;
 
-
+	tpc->AddNode(pixel_board,i,new TGeoTranslation(0,0,-0.5)); i++;
+	
 	TGeoVolume *cath = geom->MakeBox("CATHODE", Al, TPC_size_x/2. ,TPC_size_y/2. ,0.1);
 	cath->SetTransparency(90);
 	cath->SetLineColor(kYellow);
 	tpc->AddNode(cath, i, new TGeoTranslation(TPC_shift_x,TPC_shift_y,TPC_size_z)); i++;
 
-	TGeoVolume *acl1=geom->MakeBox("ACL1 module", Al, acl1_size_x/2., acl1_size_y/2., acl1_size_z/2.);
-	acl1->SetTransparency(50);
-	acl1->SetVisibility(kTRUE);
-	acl1->SetLineColor(kGreen);
+	TGeoVolume *sipm=geom->MakeBox("SIPM module", Al, sipm_size_x/2., sipm_size_y/2., sipm_size_z/2.);
+	sipm->SetTransparency(50);
+	sipm->SetVisibility(kTRUE);
+	sipm->SetLineColor(kGreen);
 
-	tpc->AddNode(acl1,i,new TGeoTranslation(acl1_shift_x-acl1_size_x/2.,acl1_shift_y,acl1_shift_z));
-	i++;
-
-	TGeoVolume *lcm1=geom->MakeBox("LCM1 module", Al, lcm1_size_x/2., lcm1_size_y/2., lcm1_size_z/2.);
-	lcm1->SetTransparency(50);
-	lcm1->SetVisibility(kTRUE);
-	lcm1->SetLineColor(kGreen);
-
-	tpc->AddNode(lcm1,i,new TGeoTranslation(lcm1_shift_x-lcm1_size_x/2.,lcm1_shift_y,lcm1_shift_z));
-	i++;
+	for(int j=0;j<nsipm_x;j++){
+        for(int l=0;l<nsipm_y;l++){
+		    tpc->AddNode(sipm,i,new TGeoTranslation(sipm_shift_x-TPC_size_x/2.+(j+0.5)*sipm_space_x,sipm_shift_y-TPC_size_y/2.+(l+0.5)*sipm_space_y ,sipm_shift_z));
+		    i++;
+        }
+	}
 
 
-	top->AddNode(tpc, 0, new TGeoTranslation(0,0,0));
+	//top->AddNode(tpc, 0, new TGeoTranslation(0,0,0));
+	geom->SetTopVolume(tpc);
+	//geom->AddNode(tpc, 0, new TGeoTranslation(0,0,0));
+	
 
 	/*
 	TGeoVolume *lcm=geom->MakeBox("LCM module", Al, lcm_size_x/2., lcm_size_y/2., lcm_size_z/2.);
@@ -303,8 +303,8 @@ void SingleModule3DLightReco(char *fname, int pileup=0)
 	navig=geom->GetCurrentNavigator(); 
 
 	curev=0;
-	lcm1_photons=0;
-	acl1_photons=0;
+	memset(sipm_vis, 0, sizeof(sipm_vis));
+	memset(sipm_npe, 0, sizeof(sipm_npe));
 	AddTrack(curev);
 }
 
@@ -329,20 +329,29 @@ void PrevEvent()
 
 void fullrun(char *fname){
 	SingleModule3DLightReco(fname,1);
-	for (int i=1;i<Nentries;i++){
+	printf("%d Events found\n",Nentries);
+	//Nentries = 1;
+	for (int i=0;i<Nentries;i++){
+		//printf("Processing Entry %d of %d\r",i,Nentries);
 		NextEvent();
 	}
 	tr->Write(0,TObject::kOverwrite);
+	//evtr->Write(0,TObject::kOverwrite);
 	_file0->Close();
 }
 
 
 void AddTrack(int evt)
 {
-	printf("Processing entry %d...",evt);
+	
 	tr->GetEntry(evt);
-	printf("Event: %d, Track: %d Event time %llu\n",eventID,trackID,event_unix_ts);
-
+	//evtr->GetEntryWithIndex(track_eventID);
+	//printf("Event: %d, Track: %d Event time %llu\n",eventID,trackID,event_unix_ts);
+	//while(track_dy<1000){
+	//	evt++;
+	//	tr->GetEntry(evt);
+	//}
+	lightreco_flag=0;
  
     if(track>0 && gpileup==0)
     {
@@ -355,18 +364,35 @@ void AddTrack(int evt)
 
 	node=0;
 
-	lcm1_photons=0;
-	acl1_photons=0;
+	memset(sipm_vis, 0, sizeof(sipm_vis));
+	memset(sipm_npe, 0, sizeof(sipm_npe));
 
-	//if(1){
-	if(track_nhits>10 && track_length>10){ 						//Apply cut
-		Float_t cgx_temp=(track_end_pos_x+track_start_pos_x)/2.;
-		Float_t cgy_temp=(track_end_pos_y+track_start_pos_y)/2.;
-		Float_t cgz_temp=(track_end_pos_z+track_start_pos_z)/2.;
+
+	if(1){
+	//if(track_dy>1000 && event_ntracks<5){ 
+	//	printf("tr: %d ev: %d\n",track_eventID,eventID);
+	//	printf("%d\n",++cut_count);
+	//}					//Apply cut
+	//if(0){
+		printf("Processing entry %d of %d\n",evt,Nentries);
+		lightreco_flag=1;				
+		cgx = (track_end_pos_x+track_start_pos_x)/2.;
+		cgy = (track_end_pos_y+track_start_pos_y)/2.;
+		cgz = (track_end_pos_z+track_start_pos_z)/2.;
+
+		track_dx=track_end_pos_x-track_start_pos_x;
+		track_dy=track_end_pos_y-track_start_pos_y;
+		track_dz=track_end_pos_z-track_start_pos_z;
+
+		track_length = sqrt(track_dx*track_dx+track_dy*track_dy+track_dz*track_dz);
+		dqdx = track_q/track_length;
+		//printf("tr_len: %f tr_dqdx: %f",track_length,dqdx);
 
 		Float_t vx=(track_end_pos_x-track_start_pos_x)/track_length;
 		Float_t vy=(track_end_pos_y-track_start_pos_y)/track_length;
 		Float_t vz=(track_end_pos_z-track_start_pos_z)/track_length;
+
+		
 
 		track=new TEveLine(2);
 		track->Reset(2);
@@ -383,9 +409,11 @@ void AddTrack(int evt)
 		//now go step by step and highlight track elements in argon
 
 		Float_t curx,cury,curz;
-		Int_t istep=0;
+		Float_t istep=0.5;
 		Float_t step=1.0; //1mm step
-		curx=cgx_temp; cury=cgy_temp; curz=cgz_temp;
+		curx=track_start_pos_x+vx*istep*step;
+		cury=track_start_pos_y+vy*istep*step;
+		curz=track_start_pos_z+vz*istep*step;
 		geom->FindNode(curx,cury,curz); 
 		node=geom->GetCurrentNode();
 		curnode=node->GetNumber();
@@ -394,33 +422,32 @@ void AddTrack(int evt)
 		atrack=new TEveLine(2);
 		atrack->SetPoint(0,curx,cury,curz);
 		//first up from the cg (z to positive)
-		while(curz>0 && curz < TPC_size_z && sqrt((curx-TPC_shift_x)*(curx-TPC_shift_x))< TPC_size_x/2. && sqrt((cury-TPC_shift_y)*(cury-TPC_shift_y))< TPC_size_y/2. ) //Go along track as long as within TPC boundary
-		{
-			istep++;
-			curx=cgx_temp+vx*istep*step;
-			cury=cgy_temp+vy*istep*step;
-			curz=cgz_temp+vz*istep*step;
+		do{
 			geom->FindNode(curx,cury,curz); 
 			node=geom->GetCurrentNode();
 			curnode=node->GetNumber();
 			//   printf("Step %d curnode: %s, curnode number%d, curxyz: %f %f %f\n",istep,node->GetName(), curnode,curx,cury,curz);
 			//   if(curnode==prevnode && curnode==1) {printf("Adding point..\n"); atrack->SetPoint(atrack->GetN(),curx,cury,curz);}
 			if(curnode!=prevnode && curnode==2) { atrack=new TEveLine(2); atrack->SetPoint(0,curx,cury,curz);}
-			if(curnode==prevnode && curnode==2) TracePhotons(curx,cury,curz);
+			if(istep==1) {TracePhotons(curx,cury,curz,0); printf("?");}
+			if(istep!=1) TracePhotons(curx,cury,curz,0);
+			//if(curnode==prevnode && curnode==2) TracePhotons(curx,cury,curz,0);
 			if(curnode!=prevnode && prevnode==2) {atrack->SetPoint(1,curx,cury,curz), gEve->AddElement(atrack);} //last point in a track
 			prevnode=curnode;
-		}
+			istep++;
+			curx=track_start_pos_x+vx*istep*step;
+			cury=track_start_pos_y+vy*istep*step;
+			curz=track_start_pos_z+vz*istep*step;
+		}while(curx < track_end_pos_x && cury < track_end_pos_y && curz < track_end_pos_z);
 		if(prevnode==2) {
 			printf("END: Adding end point, adding track to gEve..\n"); 
 			atrack->SetPoint(1,curx,cury,curz), gEve->AddElement(atrack);
+			
 		} //last point in a track
 
-		cgx=curx;
-		cgy=cury;
-		cgy=cury;
-
+		/**
 		//now down from the cg (z to negative)
-		curx=cgx_temp; cury=cgy_temp; curz=cgz_temp;
+		curx=cgx; cury=cgy; curz=cgz;
 		geom->FindNode(curx,cury,curz); 
 		node=geom->GetCurrentNode();
 		curnode=node->GetNumber();
@@ -429,19 +456,22 @@ void AddTrack(int evt)
 		atrack=new TEveLine(2);
 		atrack->SetPoint(0,curx,cury,curz);
 		istep=0; 
-		while(curz>0 && curz < TPC_size_z && sqrt(curx*curx)< TPC_size_x/2. && sqrt(cury*cury)< TPC_size_y/2. )
+		while(curx > track_start_pos_x && cury > track_start_pos_y && curz > track_start_pos_z)
 		{
 			istep++;
-			curx=cgx_temp-vx*istep*step;
-			cury=cgy_temp-vy*istep*step;
-			curz=cgz_temp-vz*istep*step;
+			curx=cgx-vx*istep*step;
+			cury=cgy-vy*istep*step;
+			curz=cgz-vz*istep*step;
 			geom->FindNode(curx,cury,curz); 
 			node=geom->GetCurrentNode();
 			curnode=node->GetNumber();
 			// printf("Step %d curnode: %s, curnode number%d, curxyz: %f %f %f\n",istep,node->GetName(), curnode,curx,cury,curz);
 			//   if(curnode==prevnode && curnode==1) {printf("Adding point..\n"); atrack->SetPoint(atrack->GetN(),curx,cury,curz);}
 			if(curnode!=prevnode && curnode==2) { atrack=new TEveLine(2); atrack->SetPoint(0,curx,cury,curz);}
-			if(curnode==prevnode && curnode==2) TracePhotons(curx,cury,curz);
+			if(istep==1) {TracePhotons(curx,cury,curz,2); printf("?");}
+			if(istep!=1) TracePhotons(curx,cury,curz,2);
+			//if(curnode==prevnode && curnode==2&&istep==1) TracePhotons(curx,cury,curz,1); //debugging case
+			//if(curnode==prevnode && curnode==2&&istep!=1) TracePhotons(curx,cury,curz,0);
 			if(curnode!=prevnode && prevnode==2) { atrack->SetPoint(1,curx,cury,curz), gEve->AddElement(atrack);} //last point in a track
 			prevnode=curnode;
 		}
@@ -450,29 +480,24 @@ void AddTrack(int evt)
 			atrack->SetPoint(1,curx,cury,curz), gEve->AddElement(atrack);
 		} //last point in a track
 
-		cgx=(cgx+curx)/2.;
-		cgy=(cgy+cury)/2.;
-		cgz=(cgz+curz)/2.;
-
+		**/
 
    }
    
-   printf("lcm1 detected %f virtual photons in this event\n",lcm1_photons);
 
-
-   blcm1->Fill();
-   bacl1->Fill();
+   bsipm->Fill();
    bcgx->Fill();
    bcgy->Fill();
    bcgz->Fill();
+   blrf->Fill();
 
-   sprintf(str,"Event %d",eventID);
-   ann->SetText(str);
+   //sprintf(str,"Event %d",eventID);
+   //ann->SetText(str);
    gEve->Redraw3D(kFALSE);
 
 }
 
-TracePhotons(Float_t px, Float_t py, Float_t pz, Int_t rays=0)
+TracePhotons(Float_t px, Float_t py, Float_t pz, Int_t rays=2)
 {
 	Float_t ldx,ldy,ldz; // coordinates of grid nodes at the light detectors
 	Float_t ldd; //distance from emitting point to grid node
@@ -480,7 +505,7 @@ TracePhotons(Float_t px, Float_t py, Float_t pz, Int_t rays=0)
 	Double_t v0[3];
 	Double_t v1[3];
 	Double_t rv[3]; //ray vector
-	Double_t *nv; //normal vector
+	Double_t nv[3]; //normal vector
 	Double_t cosine=1; //cosine of the ray-to-normal angle
 	Double_t cosiney=1; //cosine of the ray-to-normal angle
 	Double_t cosinez=1; //cosine of the ray-to-normal angle
@@ -488,81 +513,63 @@ TracePhotons(Float_t px, Float_t py, Float_t pz, Int_t rays=0)
 	//TGeoRotation *rotls = new TGeoRotation("rotls",0,0,0);
 	//printf("Photons emitted at %f %f %f\n",px,py,pz);
 
-	for(Float_t iy=0; iy<GRIDNODES; iy++) for(Float_t iz=0; iz<GRIDNODES; iz++){
-		// lcm1
-		//calculate coordinates and distance
-		//coordinates in a light detector plane 
-		ldx= lcm1_shift_x;
-		ldy= lcm1_shift_y-lcm1_size_y/2.0 + (iy+0.5)/GRIDNODES*lcm1_size_y;
-		ldz= lcm1_shift_z-lcm1_size_z/2.0 + (iz+0.5)/GRIDNODES*lcm1_size_z;
-
-		if(rays==1){
-			rtrace=new TEveLine(2);
-			rtrace->SetPoint(0,px,py,pz);
-			rtrace->SetPoint(1,ldx,ldy,ldz);
-			gEve->AddElement(rtrace);
-			}
-		rv[0]=px-ldx; rv[1]=py-ldy; rv[2]=pz-ldz;
-		ldd=sqrt( rv[0]*rv[0]+rv[1]*rv[1]+rv[2]*rv[2] );
-		//check if the emission point is actially seen from the detector
-			geom->SetCurrentDirection(-rv[0],-rv[1],-rv[2]); 
-			geom->FindNode(px,py,pz);
-			node=geom->FindNextBoundary();
-			nv=geom->FindNormal(kTRUE);
+	for(int j=0;j<nsipm_x;j++){
+	for(int l=0;l<nsipm_y;l++){
+			t0=clock();
+		//for(Float_t iy=0; iy<GRIDNODES; iy++) for(Float_t ix=0; iz<GRIDNODES; ix++){
+			// ACL1
+			//calculate coordinates and distance
+			//coordinates in a light detector plane
+			//t0 = clock(); 
+			ldx= sipm_shift_x-TPC_size_x/2.+(j+0.5)*sipm_space_x;
+			ldy= sipm_shift_y-TPC_size_y/2.+(l+0.5)*sipm_space_y;
+			ldz= sipm_shift_z;
 			
-			//Calculate solid angle
-			cosine=-(nv[0]*rv[0]+nv[1]*rv[1]+nv[2]*rv[2])/(ldd*1.0); //normal vector has unit length
-			//cosiney=1./sqrt(rv[1]*rv[1]/(rv[0]*rv[0])+1.);
-			//cosinez=1./sqrt(rv[2]*rv[2]/(rv[0]*rv[0])+1.);    
-			domega=cosine*4*TMath::ASin((lcm1_size_y/GRIDNODES)*(lcm1_size_z/GRIDNODES)/sqrt((4.0*ldd*ldd+(lcm1_size_y/GRIDNODES)*(lcm1_size_y/GRIDNODES))*(4.0*ldd*ldd+(lcm1_size_z/GRIDNODES)*(lcm1_size_z/GRIDNODES)))); // * fabs(ldy-py) /ldd;
-			//domega=4*TMath::ASin(cosiney*cosinez*(lcm1_size_y/GRIDNODES)*(lcm1_size_z/GRIDNODES)/sqrt((4.0*ldd*ldd+cosiney*cosiney*(lcm1_size_y/GRIDNODES)*(lcm1_size_y/GRIDNODES))*(4.0*ldd*ldd+cosinez*cosinez*(lcm1_size_z/GRIDNODES)*(lcm1_size_z/GRIDNODES))));
 
-			lcm1_photons=lcm1_photons+1.*domega/(4*3.14152);
+			//if(rays==1&&j==4){
+			//	rtrace=new TEveLine(2);
+			//	rtrace->SetPoint(0,px,py,pz);
+			//	rtrace->SetPoint(1,ldx,ldy,ldz);
+			//	gEve->AddElement(rtrace);
+			//}
+			rv[0]=px-ldx; rv[1]=py-ldy; rv[2]=pz-ldz;
+			ldd=sqrt( rv[0]*rv[0]+rv[1]*rv[1]+rv[2]*rv[2] );
+			//check if the emission point is actially seen from the detector
+			//geom->SetCurrentDirection(-rv[0],-rv[1],-rv[2]);
+			//geom->FindNode(px,py,pz);
+			//node=geom->FindNextBoundary();
+			//nv=geom->FindNormal(kTRUE);
+			nv[0]=0;
+			nv[1]=0;
+			nv[2]=1;
+			//t1=clock();
+			//Calculate solid angle
+			//printf("ldx: %f ldy: %f ldz: %f",rv[0],rv[1],rv[2]);
+			cosine=(nv[0]*rv[0]+nv[1]*rv[1]+nv[2]*rv[2])/(ldd*1.0); //normal vector has unit length
+			//t2=clock();
+			//cosiney=1./sqrt(rv[1]*rv[1]/(rv[0]*rv[0])+1.);
+			//cosinez=1./sqrt(rv[2]*rv[2]/(rv[0]*rv[0])+1.);
+			//domega = cosine*(sipm_size_x)*(sipm_size_y)/(ldd*ldd);
+			domega=cosine*4*TMath::ASin((sipm_size_x)*(sipm_size_y)/sqrt((4.0*ldd*ldd+(sipm_size_x)*(sipm_size_x))*(4.0*ldd*ldd+(sipm_size_y)*(sipm_size_y))));
+			//domega=4*TMath::ASin(cosiney*cosinez*(acl1_size_y/GRIDNODES)*(acl1_size_z/GRIDNODES)/sqrt((4.0*ldd*ldd+cosiney*cosiney*(acl1_size_y/GRIDNODES)*(acl1_size_y/GRIDNODES))*(4.0*ldd*ldd+cosinez*cosinez*(acl1_size_z/GRIDNODES)*(acl1_size_z/GRIDNODES))));
+			//if(strcmp(node->GetName(), "CATHODE_18")!=0) sipm_vis[j*nsipm_x+l]=sipm_vis[j*nsipm_x+l]+1.*domega/(4*3.14152);
+			sipm_vis[j*nsipm_x+l]+=1.*domega/(4*3.14152);
+			//t3=clock();
+			//printf("ini: %f, cos: %f, domega: %f\n", (double)(t1-t0), (double)(t2-t1), (double)(t3-t2));
 			if(rays==2){
 				rtrace=new TEveLine(2);
-				rtrace->SetPoint(0,px,py,pz);
+				trace->SetPoint(0,px,py,pz);
 				rtrace->SetPoint(1,ldx,ldy,ldz);
 				gEve->AddElement(rtrace);
-				printf("domega %f cosine %f\n",domega,cosine);
+				printf("domega %.10f cosine %f\n",domega,cosine);
 			}
+		t1=clock();
+		sipm_npe[j*nsipm_x+l] = sipm_vis[j*nsipm_x+l] * dqdx * lyield;
+		t2=clock();
+		//printf("vis: %f, npe: %f\n", (double)(t1-t0), (double)(t2-t1));
+		//printf("npe: %f\n", sipm_npe[j*nsipm_x+l]);
+		//}
 	}
-
-	for(Float_t iy=0; iy<GRIDNODES; iy++) for(Float_t iz=0; iz<GRIDNODES; iz++){
-		// ACL1
-		//calculate coordinates and distance
-		//coordinates in a light detector plane 
-		ldx= acl1_shift_x;
-		ldy= acl1_shift_y-acl1_size_y/2.0 + (iy+0.5)/GRIDNODES*acl1_size_y;
-		ldz= acl1_shift_z-acl1_size_z/2.0 + (iz+0.5)/GRIDNODES*acl1_size_z;
-
-		if(rays==1){
-			rtrace=new TEveLine(2);
-			rtrace->SetPoint(0,px,py,pz);
-			rtrace->SetPoint(1,ldx,ldy,ldz);
-			gEve->AddElement(rtrace);
-		}
-		rv[0]=px-ldx; rv[1]=py-ldy; rv[2]=pz-ldz;
-		ldd=sqrt( rv[0]*rv[0]+rv[1]*rv[1]+rv[2]*rv[2] );
-		//check if the emission point is actially seen from the detector
-		geom->SetCurrentDirection(-rv[0],-rv[1],-rv[2]);
-		geom->FindNode(px,py,pz);
-		node=geom->FindNextBoundary();
-		nv=geom->FindNormal(kTRUE);
-		
-		//Calculate solid angle
-		cosine=-(nv[0]*rv[0]+nv[1]*rv[1]+nv[2]*rv[2])/(ldd*1.0); //normal vector has unit length
-		//cosiney=1./sqrt(rv[1]*rv[1]/(rv[0]*rv[0])+1.);
-		//cosinez=1./sqrt(rv[2]*rv[2]/(rv[0]*rv[0])+1.);
-		domega=cosine*4*TMath::ASin((acl1_size_y/GRIDNODES)*(acl1_size_z/GRIDNODES)/sqrt((4.0*ldd*ldd+(acl1_size_y/GRIDNODES)*(acl1_size_y/GRIDNODES))*(4.0*ldd*ldd+(acl1_size_z/GRIDNODES)*(acl1_size_z/GRIDNODES))));
-		//domega=4*TMath::ASin(cosiney*cosinez*(acl1_size_y/GRIDNODES)*(acl1_size_z/GRIDNODES)/sqrt((4.0*ldd*ldd+cosiney*cosiney*(acl1_size_y/GRIDNODES)*(acl1_size_y/GRIDNODES))*(4.0*ldd*ldd+cosinez*cosinez*(acl1_size_z/GRIDNODES)*(acl1_size_z/GRIDNODES))));
-		acl1_photons=acl1_photons+1.*domega/(4*3.14152);
-		if(rays==2){
-			rtrace=new TEveLine(2);
-				rtrace->SetPoint(0,px,py,pz);
-				rtrace->SetPoint(1,ldx,ldy,ldz);
-				gEve->AddElement(rtrace);
-				printf("domega %f cosine %f\n",domega,cosine);
-		}
 	}
 }
 
